@@ -4,8 +4,11 @@ let allStudents = [];
 let selectedFiles = [];
 let currentVoucher = null;
 let allPayments = [];
+let currentUser = null;
 
-const PB_PORT = '8091';
+const PB_PORT = '8093';
+const AUTH_TOKEN_KEY = 'insight_academy_auth_token';
+const AUTH_USER_KEY = 'insight_academy_auth_user';
 
 function getDefaultPbUrl() {
   if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
@@ -57,37 +60,123 @@ async function updateNetworkHint() {
 
 // ── PocketBase ──────────────────────────────────────
 async function connectPocketBase() {
-  pbUrl = document.getElementById('pb-url').value.trim().replace(/\/$/, '');
+  const urlInput = document.getElementById('pb-url');
+  pbUrl = (urlInput?.value.trim() || pbUrl || getDefaultPbUrl()).replace(/\/$/, '');
   try {
     const res = await fetch(pbUrl + '/api/health', { signal: AbortSignal.timeout(4000) });
     if (res.ok) {
       pbConnected = true;
       localStorage.setItem('pbUrl', pbUrl);
+
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      if (token) {
+        try {
+          const authRes = await fetch(`${pbUrl}/api/collections/users/auth-refresh`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (authRes.ok) {
+            const authData = await authRes.json();
+            currentUser = authData.record || null;
+            if (!currentUser) throw new Error('Session could not be verified');
+            localStorage.setItem(AUTH_USER_KEY, JSON.stringify(currentUser));
+          } else {
+            localStorage.removeItem(AUTH_TOKEN_KEY);
+            localStorage.removeItem(AUTH_USER_KEY);
+            currentUser = null;
+          }
+        } catch {
+          localStorage.removeItem(AUTH_TOKEN_KEY);
+          localStorage.removeItem(AUTH_USER_KEY);
+          currentUser = null;
+        }
+      }
+
       setStatus('Connected to PocketBase', 'connected');
-      toast('Connected to PocketBase!', 'success');
-      await ensureCollection();
-      loadStudents();
-      loadPaymentHistory();
+      document.getElementById('login-status').textContent = currentUser
+        ? 'Session verified.'
+        : 'Sign in with your staff account to continue.';
+      if (currentUser) await openApp();
     } else throw new Error();
   } catch {
     pbConnected = false;
-    setStatus('Cannot connect — is PocketBase running?', 'error');
-    toast('Connection failed. Is PocketBase running?', 'error');
+    currentUser = null;
+    document.getElementById('login-status').textContent = 'Cannot connect to PocketBase. Check the server address and try again.';
   }
-}
-
-async function ensureCollection() {
-  // PocketBase auto-creates collections via API if using admin, otherwise use UI
-  // Here we just check if collection exists
-  try {
-    await fetch(pbUrl + '/api/collections/students/records?perPage=1');
-  } catch {}
 }
 
 function setStatus(msg, type) {
   document.getElementById('pb-status-text').textContent = msg;
   const dot = document.getElementById('pb-dot');
   dot.className = 'pb-dot' + (type ? ' ' + type : '');
+}
+
+function renderAuthBar() {
+  const loggedIn = document.getElementById('auth-logged-in');
+  const userName = document.getElementById('auth-user-name');
+  if (!loggedIn || !userName) return;
+
+  const email = currentUser.email || 'Staff';
+  userName.textContent = `Signed in: ${email}`;
+  loggedIn.style.display = 'flex';
+}
+
+async function openApp() {
+  document.getElementById('login-screen').hidden = true;
+  document.getElementById('app-shell').hidden = false;
+  renderAuthBar();
+  await loadStudents();
+  await loadPaymentHistory();
+}
+
+async function loginToPocketBase() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const status = document.getElementById('login-status');
+  if (!pbUrl) pbUrl = getDefaultPbUrl();
+
+  if (!email || !password) {
+    status.textContent = 'Enter your email and password to continue.';
+    return;
+  }
+
+  status.textContent = 'Signing in...';
+  try {
+    const res = await fetch(`${pbUrl}/api/collections/users/auth-with-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identity: email, password })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || 'Login failed');
+    if (!data?.token || !data?.record) throw new Error('PocketBase returned an invalid login response');
+
+    localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.record));
+    currentUser = data.record;
+    document.getElementById('login-password').value = '';
+    await openApp();
+    toast(`Welcome, ${data.record.email || 'staff'}!`, 'success');
+  } catch (e) {
+    status.textContent = 'Login failed: ' + e.message;
+    toast('Login failed: ' + e.message, 'error');
+  }
+}
+
+function logoutFromPocketBase() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_USER_KEY);
+  currentUser = null;
+  document.getElementById('app-shell').hidden = true;
+  document.getElementById('login-screen').hidden = false;
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-status').textContent = 'Signed out. Sign in to continue.';
+}
+
+function ensureCloudSyncAuth() {
+  if (!pbConnected || currentUser) return true;
+  toast('Login required to save data to PocketBase', 'error');
+  return false;
 }
 
 // ── Fee Calc ────────────────────────────────────────
@@ -132,7 +221,8 @@ async function getNextStudentSerial(pbBaseUrl) {
   let totalPages = 1;
   do {
     const res = await fetch(
-      `${pbBaseUrl}/api/collections/students/records?perPage=500&page=${page}&fields=student_id`
+      `${pbBaseUrl}/api/collections/students/records?perPage=500&page=${page}&fields=student_id`,
+      { headers: { Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}` } }
     );
     if (!res.ok) break;
     const data = await res.json();
@@ -177,7 +267,6 @@ async function saveStudent() {
   };
 
   if (!pbConnected) {
-    // Save locally in localStorage as fallback
     const students = JSON.parse(localStorage.getItem('students') || '[]');
     const id = 'STD-' + String(students.length + 1).padStart(4, '0');
     studentData.student_id = id;
@@ -190,14 +279,21 @@ async function saveStudent() {
     return;
   }
 
+  if (!ensureCloudSyncAuth()) return;
+
   try {
     const formData = new FormData();
     Object.entries(studentData).forEach(([k, v]) => formData.append(k, v));
     selectedFiles.forEach(f => formData.append('documents', f));
- 
+
     const res = await fetch(pbUrl + '/api/collections/students/records', {
-      method: 'POST', body: formData
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}`
+      },
+      body: formData
     });
+
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || 'Save failed');
 
@@ -205,17 +301,22 @@ async function saveStudent() {
     const sid = 'STD-' + String(serial).padStart(4, '0');
     const patchRes = await fetch(pbUrl + '/api/collections/students/records/' + data.id, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}`
+      },
       body: JSON.stringify({ student_id: sid })
     });
+
     if (!patchRes.ok) {
       const errBody = await patchRes.json().catch(() => ({}));
       throw new Error(errBody.message || 'Could not assign student ID');
     }
+
     document.getElementById('student-id-display').textContent = sid;
     toast('Student registered: ' + sid, 'success');
     loadStudents();
-  } catch(e) {
+  } catch (e) {
     toast('Error: ' + e.message, 'error');
   }
 }
@@ -226,7 +327,9 @@ async function loadStudents() {
     allStudents = JSON.parse(localStorage.getItem('students') || '[]');
   } else {
     try {
-      const res = await fetch(pbUrl + '/api/collections/students/records?perPage=500&sort=created');
+      const res = await fetch(pbUrl + '/api/collections/students/records?perPage=500&sort=created', {
+        headers: { Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}` }
+      });
       const data = await res.json();
       allStudents = data.items || [];
     } catch { allStudents = JSON.parse(localStorage.getItem('students') || '[]'); }
@@ -304,7 +407,9 @@ async function loadPaymentHistory() {
     allPayments = local;
   } else {
     try {
-      const res = await fetch(pbUrl + '/api/collections/fee_payments/records?perPage=500&sort=-paid_at,-created');
+      const res = await fetch(pbUrl + '/api/collections/fee_payments/records?perPage=500&sort=-paid_at,-created', {
+        headers: { Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}` }
+      });
       if (res.ok) {
         const remote = (await res.json()).items || [];
         const merged = new Map();
@@ -369,7 +474,7 @@ function openVoucherFromPayment(studentId, month, year) {
   document.getElementById('voucher-student-id').value = studentId;
   document.getElementById('voucher-month').value = month;
   document.getElementById('voucher-year').value = year;
-  fetchStudentForVoucher();
+  fetchStudentForVoucher({ allowHistorical: true });
   document.getElementById('voucher-output')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -391,12 +496,18 @@ async function savePaymentRecord(record) {
   saveLocalPayment(record);
 
   if (!pbConnected) return record;
+  if (!ensureCloudSyncAuth()) return record;
 
   try {
     const filter = encodeURIComponent(
       `(student_id='${record.student_id}' && month='${record.month}' && year=${record.year})`
     );
-    const existingRes = await fetch(pbUrl + `/api/collections/fee_payments/records?filter=${filter}&perPage=1`);
+    const existingRes = await fetch(pbUrl + `/api/collections/fee_payments/records?filter=${filter}&perPage=1`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}`
+      }
+    });
+
     if (existingRes.status === 404) return record;
 
     const existingData = await existingRes.json();
@@ -417,13 +528,19 @@ async function savePaymentRecord(record) {
     if (existing) {
       res = await fetch(pbUrl + '/api/collections/fee_payments/records/' + existing.id, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}`
+        },
         body: JSON.stringify(payload)
       });
     } else {
       res = await fetch(pbUrl + '/api/collections/fee_payments/records', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}`
+        },
         body: JSON.stringify(payload)
       });
     }
@@ -438,15 +555,41 @@ async function savePaymentRecord(record) {
 }
 
 // ── Voucher ─────────────────────────────────────────
-async function fetchStudentForVoucher() {
+function setVoucherPeriodToCurrentMonth() {
+  const now = new Date();
+  const month = new Intl.DateTimeFormat('en', { month: 'long' }).format(now);
+  const year = now.getFullYear();
+  const monthInput = document.getElementById('voucher-month');
+  const yearInput = document.getElementById('voucher-year');
+  monthInput.value = month;
+  yearInput.value = year;
+  yearInput.min = year;
+  yearInput.max = year;
+}
+
+async function fetchStudentForVoucher({ allowHistorical = false } = {}) {
   const sid = document.getElementById('voucher-student-id').value.trim();
   if (!sid) { toast('Enter a Student ID', 'error'); return; }
+
+  const month = document.getElementById('voucher-month').value;
+  const year = Number(document.getElementById('voucher-year').value);
+  const now = new Date();
+  const monthIndex = Array.from(document.getElementById('voucher-month').options)
+    .findIndex(option => option.value === month);
+  const isCurrentPeriod = Number.isInteger(year) && year === now.getFullYear() && monthIndex === now.getMonth();
+  const hasExistingPayment = allowHistorical && findPayment(sid, month, year);
+  if (!isCurrentPeriod && !hasExistingPayment) {
+    toast('Only vouchers for the current month can be generated.', 'error');
+    return;
+  }
 
   let student = allStudents.find(s => (s.student_id || s.id) === sid);
 
   if (!student && pbConnected) {
     try {
-      const res = await fetch(pbUrl + `/api/collections/students/records?filter=(student_id='${sid}')`);
+      const res = await fetch(pbUrl + `/api/collections/students/records?filter=(student_id='${sid}')`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}` }
+      });
       const data = await res.json();
       student = data.items && data.items[0];
     } catch {}
@@ -454,10 +597,8 @@ async function fetchStudentForVoucher() {
 
   if (!student) { toast('Student not found: ' + sid, 'error'); return; }
 
-  const month = document.getElementById('voucher-month').value;
-  const year = document.getElementById('voucher-year').value;
   const today = new Date();
-  const dueDate = new Date(today.getFullYear(), today.getMonth() + 1, 10);
+  const dueDate = new Date(year, monthIndex + 1, 10);
   const voucherNo = buildVoucherNo(student.student_id || student.id, month, year);
   const netFee = student.net_fee || student.base_fee || 0;
 
@@ -482,8 +623,9 @@ async function fetchStudentForVoucher() {
   currentVoucher = {
     student_id: student.student_id || student.id,
     student_name: student.full_name || '',
+    student_phone: student.contact || '',
     month,
-    year: Number(year),
+    year,
     voucher_no: voucherNo,
     amount: netFee
   };
@@ -525,6 +667,138 @@ async function markPaid() {
   }
 }
 
+function createVoucherImageFile() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1200;
+  canvas.height = 1200;
+  const ctx = canvas.getContext('2d');
+  const colors = { primary: '#1a3a5c', accent: '#c8860a', text: '#1a1a1a', muted: '#5a5248', border: '#d6cfc0', surface: '#fffdf8' };
+
+  ctx.fillStyle = colors.surface;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = colors.border;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(24, 24, canvas.width - 48, canvas.height - 48);
+  ctx.fillStyle = colors.primary;
+  ctx.fillRect(24, 24, canvas.width - 48, 205);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 48px Georgia, serif';
+  ctx.fillText('Insight Academy', 600, 100);
+  ctx.font = '28px Arial, sans-serif';
+  ctx.fillText('Fee Payment Voucher', 600, 148);
+  ctx.font = 'bold 24px Arial, sans-serif';
+  ctx.fillText(`${currentVoucher.voucher_no}  |  ${currentVoucher.month} ${currentVoucher.year}`, 600, 190);
+
+  if (currentVoucher.status === 'paid') {
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#d8f3dc';
+    ctx.font = 'bold 24px Arial, sans-serif';
+    ctx.fillText('PAID', 1110, 65);
+  }
+
+  const fields = [
+    ['STUDENT ID', currentVoucher.student_id], ['VOUCHER NO.', currentVoucher.voucher_no],
+    ['STUDENT NAME', currentVoucher.student_name], ['FATHER\'S NAME', document.getElementById('v-father').textContent],
+    ['CLASS / PROGRAM', document.getElementById('v-class').textContent], ['MONTH', `${currentVoucher.month} ${currentVoucher.year}`],
+    ['ISSUE DATE', document.getElementById('v-issue-date').textContent], ['DUE DATE', document.getElementById('v-due-date').textContent]
+  ];
+  ctx.textAlign = 'left';
+  fields.forEach(([label, value], index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const x = column === 0 ? 80 : 635;
+    const y = 300 + row * 88;
+    ctx.fillStyle = colors.muted;
+    ctx.font = 'bold 18px Arial, sans-serif';
+    ctx.fillText(label, x, y);
+    ctx.fillStyle = colors.text;
+    ctx.font = '26px Arial, sans-serif';
+    ctx.fillText(String(value || '—'), x, y + 34, 485);
+  });
+
+  ctx.strokeStyle = colors.border;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8, 7]);
+  ctx.beginPath();
+  ctx.moveTo(80, 675);
+  ctx.lineTo(1120, 675);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const feeRows = [
+    ['Base Monthly Fee', document.getElementById('v-base-fee').textContent],
+    ['Discount', document.getElementById('v-discount').textContent]
+  ];
+  if (document.getElementById('v-notes-row').style.display !== 'none') {
+    feeRows.push(['Fee Notes', document.getElementById('v-notes-label').textContent]);
+  }
+  feeRows.forEach(([label, value], index) => {
+    const y = 725 + index * 58;
+    ctx.fillStyle = colors.muted;
+    ctx.font = '24px Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, 90, y);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = colors.text;
+    ctx.fillText(value, 1110, y);
+  });
+
+  const totalY = 885;
+  ctx.strokeStyle = colors.primary;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(80, totalY - 32);
+  ctx.lineTo(1120, totalY - 32);
+  ctx.stroke();
+  ctx.fillStyle = colors.primary;
+  ctx.font = 'bold 30px Georgia, serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('Net Amount Payable', 90, totalY + 12);
+  ctx.textAlign = 'right';
+  ctx.fillText(`PKR ${Number(currentVoucher.amount || 0).toLocaleString()}`, 1110, totalY + 12);
+
+  ctx.strokeStyle = colors.border;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8, 6]);
+  ctx.strokeRect(80, 955, 500, 105);
+  ctx.strokeRect(620, 955, 500, 105);
+  ctx.setLineDash([]);
+  ctx.fillStyle = colors.muted;
+  ctx.font = '20px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Signature & Stamp', 330, 1020);
+  ctx.fillText('Student / Parent Copy', 870, 1020);
+  ctx.font = '18px Arial, sans-serif';
+  ctx.fillText('Please pay before the due date. Keep this voucher as proof of payment.', 600, 1125);
+
+  const dataUrl = canvas.toDataURL('image/png');
+  const bytes = Uint8Array.from(atob(dataUrl.split(',')[1]), char => char.charCodeAt(0));
+  const fileName = `voucher-${currentVoucher.student_id}-${currentVoucher.year}-${currentVoucher.month}.png`;
+  return new File([bytes], fileName, { type: 'image/png' });
+}
+
+async function shareVoucherOnWhatsApp() {
+  if (!currentVoucher) {
+    toast('Generate a voucher first', 'error');
+    return;
+  }
+
+  const file = createVoucherImageFile();
+  const cleanPhone = String(currentVoucher.student_phone || '').replace(/\D/g, '');
+  const url = URL.createObjectURL(file);
+  const download = document.createElement('a');
+  download.href = url;
+  download.download = file.name;
+  download.click();
+  URL.revokeObjectURL(url);
+  const whatsappUrl = cleanPhone
+    ? `https://web.whatsapp.com/send?phone=${encodeURIComponent(cleanPhone)}`
+    : 'https://web.whatsapp.com/';
+  window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+  toast('Voucher image downloaded. Attach it in WhatsApp Web to send.', 'success');
+}
+
 // ── Utilities ───────────────────────────────────────
 function switchPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -556,6 +830,8 @@ function toast(msg, type) {
 
 // ── Init ─────────────────────────────────────────────
 window.onload = async () => {
+  setVoucherPeriodToCurrentMonth();
+
   document.getElementById('enrollment-date').value = new Date().toISOString().split('T')[0];
   document.getElementById('voucher-year').value = new Date().getFullYear();
   allStudents = JSON.parse(localStorage.getItem('students') || '[]');
@@ -563,11 +839,7 @@ window.onload = async () => {
 
   const urlInput = document.getElementById('pb-url');
   pbUrl = getDefaultPbUrl();
-  urlInput.value = pbUrl;
+  if (urlInput) urlInput.value = pbUrl;
   updateNetworkHint();
   await connectPocketBase();
-
-  if (!pbConnected && allStudents.length) {
-    setStatus('Using local storage (' + allStudents.length + ' students). Connect PocketBase for cloud sync.', '');
-  }
 };
