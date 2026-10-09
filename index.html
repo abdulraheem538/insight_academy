@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<link rel="stylesheet" href="styles.css?v=20261003-2"/>
-<script src="script.js?v=20261003-2"></script>
+<link rel="stylesheet" href="styles.css?v=20261004-1"/>
+<script src="script.js?v=20261004-8"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Student Management System</title>
 <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
@@ -55,11 +55,7 @@
 <!-- ═══════════════════════════════════════════ REGISTRATION PAGE -->
 <div class="page" id="page-registration">
 
-  <div class="pb-status"  id="pb-status">
-    <div class="pb-dot" id="pb-dot"></div>
-    <span id="pb-status-text">PocketBase not connected</span>
-  </div>
-  <div class="pb-network-hint" id="pb-network-hint" style="display:none"></div>
+  
 
   <div class="page-title">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -145,7 +141,7 @@
         <input type="file" id="doc-files" multiple accept=".pdf,.jpg,.jpeg,.png" onchange="handleFiles(this)" />
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--text2)" stroke-width="1.5" style="margin:0 auto 6px; display:block"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         <div class="file-upload-label">Click to upload documents</div>
-        <div style="font-size:0.75rem;color:var(--text2);margin-top:2px">PDF, JPG, PNG supported</div>
+        <div style="font-size:0.75rem;color:var(--text2);margin-top:2px">PDF, JPG, PNG supported · Up to 10 files, 10 MB each</div>
       </div>
       <div class="file-list" id="file-list"></div>
     </div>
@@ -249,6 +245,7 @@
         Print Voucher
       </button>
     </div>
+  s
 
     <div class="voucher-wrap">
       <div class="voucher-header">
@@ -325,13 +322,19 @@
       <button class="btn btn-outline btn-sm" onclick="loadPaymentHistory()">Refresh</button>
     </div>
     <div id="payment-history-wrap">
-      <div class="empty-state">No payment records yet. Mark a voucher as paid to see it here.</div>
+      <div class="empty-state">No vouchers yet. Generate a voucher to see it here and share it with your staff.</div>
     </div>
   </div>
 </div>
 
 <!-- ═══════════════════════════════════════════ STUDENTS LIST PAGE -->
+
 <div class="page active" id="page-students">
+  <div class="pb-status"  id="pb-status">
+    <div class="pb-dot" id="pb-dot"></div>
+    <span id="pb-status-text">PocketBase not connected</span>
+  </div>
+   <!-- <div class="pb-network-hint" id="pb-network-hint" style="display:none"></div> -->
   <div class="page-title">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
     All Students
@@ -352,6 +355,17 @@
     </div>
   </div>
 </div>
+
+<dialog id="student-profile-dialog" class="student-profile-dialog" aria-labelledby="student-profile-title">
+  <div class="student-profile-header">
+    <div>
+      <h2 id="student-profile-title">Student Profile</h2>
+      <p id="student-profile-subtitle"></p>
+    </div>
+    <button class="btn btn-outline btn-sm" type="button" onclick="closeStudentProfile()">Close</button>
+  </div>
+  <div id="student-profile-content" class="student-profile-content"></div>
+</dialog>
 
 </div>
 
