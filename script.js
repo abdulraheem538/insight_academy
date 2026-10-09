@@ -42,6 +42,15 @@ async function detectLocalNetworkIp() {
   });
 }
 
+function getPcIpFromUrl() {
+  const ip = new URLSearchParams(window.location.search).get('pcIp');
+  if (!ip) return null;
+
+  const octets = ip.split('.');
+  if (octets.length !== 4 || octets.some((octet) => !/^\d{1,3}$/.test(octet) || Number(octet) > 255)) return null;
+  return ip;
+}
+
 async function updateNetworkHint() {
   const el = document.getElementById('pb-network-hint');
   if (!el) return;
@@ -51,7 +60,7 @@ async function updateNetworkHint() {
     return;
   }
 
-  const ip = await detectLocalNetworkIp();
+  const ip = getPcIpFromUrl() || await detectLocalNetworkIp();
   const port = window.location.port || PB_PORT;
   const networkUrl = ip ? `http://${ip}:${port}` : `http://YOUR_PC_IP:${port}`;
   el.innerHTML = `📱 <strong>Phone / tablet:</strong> use the same Wi‑Fi, then open <code>${networkUrl}</code> in the browser.`;
@@ -203,7 +212,14 @@ function updateFeeDisplay(base, disc) {
 
 // ── File Upload ─────────────────────────────────────
 function handleFiles(input) {
-  Array.from(input.files).forEach(f => selectedFiles.push(f));
+  const files = Array.from(input.files);
+  if (selectedFiles.length + files.length > 10) {
+    toast('You can upload up to 10 documents per student.', 'error');
+    input.value = '';
+    return;
+  }
+  files.forEach(f => selectedFiles.push(f));
+  input.value = '';
   renderFileList();
 }
 function renderFileList() {
@@ -361,10 +377,156 @@ function renderStudentTable() {
       <td>${s.contact || ''}</td>
       <td>PKR ${(s.net_fee || 0).toLocaleString()}</td>
       <td>
+        <button class="btn btn-sm btn-outline" onclick="openStudentProfile(${allStudents.indexOf(s)})">Profile</button>
         <button class="btn btn-sm btn-outline" onclick="openVoucherForStudent('${s.student_id || s.id}')">Voucher</button>
       </td>
     </tr>`).join('')}</tbody>
   </table>`;
+}
+
+function appendStudentProfileSection(container, title, fields) {
+  const section = document.createElement('section');
+  section.className = 'student-profile-section';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  section.appendChild(heading);
+
+  const grid = document.createElement('div');
+  grid.className = 'student-profile-grid';
+  for (const [label, value] of fields) {
+    const field = document.createElement('div');
+    field.className = 'student-profile-field';
+    const fieldLabel = document.createElement('div');
+    fieldLabel.className = 'student-profile-label';
+    fieldLabel.textContent = label;
+    const fieldValue = document.createElement('div');
+    fieldValue.className = 'student-profile-value';
+    fieldValue.textContent = value === undefined || value === null || value === '' ? '—' : String(value);
+    field.append(fieldLabel, fieldValue);
+    grid.appendChild(field);
+  }
+  section.appendChild(grid);
+  container.appendChild(section);
+}
+
+function openStudentProfile(studentIndex) {
+  const student = allStudents[studentIndex];
+  if (!student) {
+    toast('Student profile could not be found. Refresh the student list and try again.', 'error');
+    return;
+  }
+
+  const studentId = student.student_id || student.id;
+  const dialog = document.getElementById('student-profile-dialog');
+  const title = document.getElementById('student-profile-title');
+  const subtitle = document.getElementById('student-profile-subtitle');
+  const content = document.getElementById('student-profile-content');
+  title.textContent = student.full_name || 'Student Profile';
+  subtitle.textContent = studentId || '';
+  content.replaceChildren();
+
+  appendStudentProfileSection(content, 'Personal Information', [
+    ['Student ID', studentId],
+    ['Full Name', student.full_name],
+    ["Father's Name", student.father_name],
+    ['Date of Birth', student.dob],
+    ['Gender', student.gender],
+    ['Contact Number', student.contact],
+    ['Email', student.email],
+    ['Address', student.address]
+  ]);
+  appendStudentProfileSection(content, 'Academic Information', [
+    ['Class / Grade', student.class_name],
+    ['Program / Department', student.program],
+    ['Previous School', student.prev_school],
+    ['Enrollment Date', student.enrollment_date],
+    ['CNIC / B-Form Number', student.cnic]
+  ]);
+  appendStudentProfileSection(content, 'Fee Structure', [
+    ['Base Fee', `PKR ${Number(student.base_fee || 0).toLocaleString()}`],
+    ['Discount', `${Number(student.discount_pct || 0)}% (PKR ${Number(student.discount_amt || 0).toLocaleString()})`],
+    ['Net Monthly Fee', `PKR ${Number(student.net_fee || student.base_fee || 0).toLocaleString()}`],
+    ['Fee Notes', student.fee_notes]
+  ]);
+
+  const documents = Array.isArray(student.documents) ? student.documents : [];
+  const documentSection = document.createElement('section');
+  documentSection.className = 'student-profile-section';
+  const documentHeading = document.createElement('h3');
+  documentHeading.textContent = 'Uploaded Documents';
+  documentSection.appendChild(documentHeading);
+  if (!documents.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'No documents uploaded.';
+    documentSection.appendChild(empty);
+  } else {
+    const documentList = document.createElement('ul');
+    for (const fileName of documents) {
+      const item = document.createElement('li');
+      if (pbConnected && student.id) {
+        const link = document.createElement('a');
+        link.href = `${pbUrl}/api/files/pbc_3827815851/${encodeURIComponent(student.id)}/${encodeURIComponent(fileName)}`;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = fileName;
+        item.appendChild(link);
+      } else {
+        item.textContent = fileName;
+      }
+      documentList.appendChild(item);
+    }
+    documentSection.appendChild(documentList);
+  }
+  content.appendChild(documentSection);
+
+  const payments = allPayments.filter((payment) => payment.student_id === studentId);
+  const paymentSection = document.createElement('section');
+  paymentSection.className = 'student-profile-section';
+  const paymentHeading = document.createElement('h3');
+  paymentHeading.textContent = 'Fee Payment History';
+  paymentSection.appendChild(paymentHeading);
+  if (!payments.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'No voucher or payment records found.';
+    paymentSection.appendChild(empty);
+  } else {
+    const table = document.createElement('table');
+    table.className = 'student-profile-payments';
+    const head = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    for (const label of ['Month', 'Voucher', 'Amount', 'Status']) {
+      const cell = document.createElement('th');
+      cell.textContent = label;
+      headerRow.appendChild(cell);
+    }
+    head.appendChild(headerRow);
+    table.appendChild(head);
+    const body = document.createElement('tbody');
+    for (const payment of payments) {
+      const row = document.createElement('tr');
+      for (const value of [
+        `${payment.month || ''} ${payment.year || ''}`.trim(),
+        payment.voucher_no || '—',
+        `PKR ${Number(payment.amount || 0).toLocaleString()}`,
+        (payment.status || 'pending').toLowerCase() === 'paid' ? 'Paid' : 'Pending'
+      ]) {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.appendChild(cell);
+      }
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    paymentSection.appendChild(table);
+  }
+  content.appendChild(paymentSection);
+  dialog.showModal();
+}
+
+function closeStudentProfile() {
+  document.getElementById('student-profile-dialog').close();
 }
 
 function openVoucherForStudent(sid) {
@@ -410,22 +572,59 @@ async function loadPaymentHistory() {
       const res = await fetch(pbUrl + '/api/collections/fee_payments/records?perPage=500&sort=-paid_at,-created', {
         headers: { Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}` }
       });
-      if (res.ok) {
-        const remote = (await res.json()).items || [];
-        const merged = new Map();
-        for (const p of [...local, ...remote]) {
-          const key = paymentKey(p.student_id, p.month, String(p.year));
-          const existing = merged.get(key);
-          if (!existing || ((p.status || '').toLowerCase() === 'paid' && (existing.status || '').toLowerCase() !== 'paid')) {
-            merged.set(key, p);
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.message || 'Could not load shared vouchers');
+      }
+
+      const remote = (await res.json()).items || [];
+      const remoteByKey = new Map(remote.map((p) => [
+        paymentKey(p.student_id, p.month, String(p.year)),
+        p
+      ]));
+      if (ensureCloudSyncAuth()) {
+        for (const payment of local) {
+          const key = paymentKey(payment.student_id, payment.month, String(payment.year));
+          const sharedPayment = remoteByKey.get(key);
+          if (sharedPayment) {
+            if ((payment.status || '').toLowerCase() === 'paid' &&
+                (sharedPayment.status || '').toLowerCase() !== 'paid') {
+              try {
+                const syncedPayment = await savePaymentRecord(payment);
+                remoteByKey.set(key, syncedPayment);
+              } catch (error) {
+                console.error('Could not sync locally saved voucher:', error);
+                toast('Voucher is still saved only on this PC: ' + error.message, 'error');
+              }
+            } else {
+              saveLocalPayment(sharedPayment);
+            }
+            continue;
+          }
+
+          try {
+            const shared = await savePaymentRecord(payment);
+            remoteByKey.set(key, shared);
+          } catch (error) {
+            console.error('Could not sync locally saved voucher:', error);
+            toast('Voucher is still saved only on this PC: ' + error.message, 'error');
           }
         }
-        allPayments = Array.from(merged.values());
       } else {
-        allPayments = local;
+        for (const payment of local) {
+          const key = paymentKey(payment.student_id, payment.month, String(payment.year));
+          const existing = remoteByKey.get(key);
+          if (!existing || ((payment.status || '').toLowerCase() === 'paid' &&
+              (existing.status || '').toLowerCase() !== 'paid')) {
+            remoteByKey.set(key, payment);
+          }
+        }
       }
-    } catch {
+      allPayments = Array.from(remoteByKey.values());
+    } catch (error) {
       allPayments = local;
+      console.error('Could not load shared vouchers:', error);
+      toast('Could not load shared vouchers: ' + error.message, 'error');
     }
   }
   renderPaymentHistory();
@@ -445,7 +644,7 @@ function renderPaymentHistory() {
   });
 
   if (!filtered.length) {
-    wrap.innerHTML = '<div class="empty-state">No payment records yet. Mark a voucher as paid to see it here.</div>';
+    wrap.innerHTML = '<div class="empty-state">No vouchers yet. Generate a voucher to see it here and share it with your staff.</div>';
     return;
   }
 
@@ -493,39 +692,48 @@ function setVoucherStatusBadge(status) {
 }
 
 async function savePaymentRecord(record) {
+  if (!pbConnected) {
+    saveLocalPayment(record);
+    return record;
+  }
   saveLocalPayment(record);
+  if (!ensureCloudSyncAuth()) throw new Error('Log in to PocketBase to share vouchers.');
 
-  if (!pbConnected) return record;
-  if (!ensureCloudSyncAuth()) return record;
-
-  try {
-    const filter = encodeURIComponent(
-      `(student_id='${record.student_id}' && month='${record.month}' && year=${record.year})`
-    );
-    const existingRes = await fetch(pbUrl + `/api/collections/fee_payments/records?filter=${filter}&perPage=1`, {
+  const filter = encodeURIComponent(
+    `(student_id='${record.student_id}' && month='${record.month}' && year=${record.year})`
+  );
+  const existingRes = await fetch(pbUrl + `/api/collections/fee_payments/records?filter=${filter}&perPage=1`, {
       headers: {
         Authorization: `Bearer ${localStorage.getItem(AUTH_TOKEN_KEY) || ''}`
       }
     });
 
-    if (existingRes.status === 404) return record;
+  if (!existingRes.ok) {
+    const error = await existingRes.json().catch(() => ({}));
+    throw new Error(error.message || 'Could not find the shared voucher.');
+  }
 
-    const existingData = await existingRes.json();
-    const existing = existingData.items && existingData.items[0];
+  const existingData = await existingRes.json();
+  const existing = existingData.items && existingData.items[0];
+  if (existing && (existing.status || '').toLowerCase() === 'paid' &&
+      (record.status || '').toLowerCase() !== 'paid') {
+    saveLocalPayment(existing);
+    return existing;
+  }
 
-    const payload = {
-      student_id: record.student_id,
-      student_name: record.student_name,
-      month: record.month,
-      year: Number(record.year),
-      voucher_no: record.voucher_no,
-      status: record.status,
-      amount: record.amount,
-      paid_at: record.paid_at || ''
-    };
+  const payload = {
+    student_id: record.student_id,
+    student_name: record.student_name,
+    month: record.month,
+    year: Number(record.year),
+    voucher_no: record.voucher_no,
+    status: record.status,
+    amount: record.amount,
+    paid_at: record.paid_at || ''
+  };
 
-    let res;
-    if (existing) {
+  let res;
+  if (existing) {
       res = await fetch(pbUrl + '/api/collections/fee_payments/records/' + existing.id, {
         method: 'PATCH',
         headers: {
@@ -545,13 +753,13 @@ async function savePaymentRecord(record) {
       });
     }
 
-    if (!res.ok) return record;
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.message || 'Could not save the shared voucher.');
+    }
     const data = await res.json();
-    saveLocalPayment({ ...record, id: data.id });
+    saveLocalPayment(data);
     return data;
-  } catch {
-    return record;
-  }
 }
 
 // ── Voucher ─────────────────────────────────────────
@@ -630,6 +838,18 @@ async function fetchStudentForVoucher({ allowHistorical = false } = {}) {
     amount: netFee
   };
 
+  try {
+    const saved = await savePaymentRecord({ ...currentVoucher, status: 'pending', paid_at: '' });
+    currentVoucher.status = (saved.status || 'pending').toLowerCase();
+    currentVoucher.paid_at = saved.paid_at || '';
+  } catch (error) {
+    console.error('Could not share voucher:', error);
+    toast('Voucher saved only on this PC for now; sharing failed: ' + error.message, 'error');
+  }
+  if (!pbConnected) {
+    toast('Voucher saved only on this PC. Connect to PocketBase to share it.', 'error');
+  }
+
   await loadPaymentHistory();
   const payment = findPayment(currentVoucher.student_id, month, year);
   const status = payment && (payment.status || '').toLowerCase() === 'paid' ? 'paid' : 'pending';
@@ -661,9 +881,12 @@ async function markPaid() {
     currentVoucher.paid_at = paidAt;
     setVoucherStatusBadge('paid');
     await loadPaymentHistory();
-    toast('Voucher marked as paid', 'success');
+    toast(pbConnected ? 'Voucher marked as paid and shared' : 'Voucher marked as paid on this PC only', 'success');
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    currentVoucher.status = 'paid';
+    currentVoucher.paid_at = paidAt;
+    setVoucherStatusBadge('paid');
+    toast('Paid status saved on this PC, but sharing failed: ' + e.message, 'error');
   }
 }
 
@@ -792,11 +1015,14 @@ async function shareVoucherOnWhatsApp() {
   download.download = file.name;
   download.click();
   URL.revokeObjectURL(url);
+  const message = `Fee voucher ${currentVoucher.voucher_no} for ${currentVoucher.student_name}, ${currentVoucher.month} ${currentVoucher.year}. Amount: PKR ${Number(currentVoucher.amount || 0).toLocaleString()}.`;
   const whatsappUrl = cleanPhone
-    ? `https://web.whatsapp.com/send?phone=${encodeURIComponent(cleanPhone)}`
-    : 'https://web.whatsapp.com/';
-  window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
-  toast('Voucher image downloaded. Attach it in WhatsApp Web to send.', 'success');
+    ? `whatsapp://send?phone=${encodeURIComponent(cleanPhone)}&text=${encodeURIComponent(message)}`
+    : `whatsapp://send?text=${encodeURIComponent(message)}`;
+  const whatsappLink = document.createElement('a');
+  whatsappLink.href = whatsappUrl;
+  whatsappLink.click();
+  toast('Voucher downloaded and WhatsApp Desktop opened. Attach the PNG from Downloads in the chat to send it.', 'success');
 }
 
 // ── Utilities ───────────────────────────────────────
